@@ -107,7 +107,7 @@ const ChatInterface = ({ messages, query, setQuery, onSend, isLoading }) => {
                     </button>
                 </form>
                 <p className="text-[10px] text-center mt-4 text-slate-400 font-medium uppercase tracking-[0.2em]">
-                    Powered by OpenAI & LlamaIndex &bull; Persistence Enabled
+                    Powered by Google Gemini & LlamaIndex &bull; Persistence Enabled
                 </p>
             </div>
         </div>
