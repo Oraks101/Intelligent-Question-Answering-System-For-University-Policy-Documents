@@ -10,7 +10,7 @@ import Login from './components/Login';
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 const API_KEY = import.meta.env.VITE_API_KEY;
 
-const isMisconfigured = !API_BASE_URL || (API_BASE_URL.includes('localhost') && import.meta.env.PROD);
+const isMisconfigured = !API_BASE_URL;
 
 // Configure axios defaults
 if (API_KEY) {
