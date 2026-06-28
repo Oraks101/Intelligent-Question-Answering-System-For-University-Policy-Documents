@@ -8,7 +8,7 @@ The application follows a decoupled client-server architecture:
 
 - **Frontend**: A React-based Single Page Application (SPA) built with Vite and Tailwind CSS.
 - **Backend**: A FastAPI server that orchestrates document processing and AI interactions.
-- **AI Core**: Powered by LlamaIndex, utilizing OpenAI's GPT-3.5 and embedding models.
+- **AI Core**: Powered by LlamaIndex, utilizing Google's Gemini 2.5 Flash and embedding models.
 - **Database**: ChromaDB for persistent vector storage.
 
 ---
@@ -57,7 +57,7 @@ The frontend provides an intuitive interface for students and administrators.
 | :--- | :--- |
 | **Backend Framework** | FastAPI |
 | **RAG Orchestrator** | LlamaIndex |
-| **LLM / Embeddings** | OpenAI (GPT-3.5-Turbo) |
+| **LLM / Embeddings** | Google Gemini (gemini-2.5-flash / gemini-embedding-001) |
 | **Vector Database** | ChromaDB |
 | **Frontend Library** | React (Vite) |
 | **Styling** | Tailwind CSS |

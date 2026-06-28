@@ -3,7 +3,6 @@ from typing import List, Dict, Any
 import chromadb
 from llama_index.core import (
     VectorStoreIndex,
-    SummaryIndex,
     SimpleDirectoryReader,
     StorageContext,
     Settings,
@@ -13,8 +12,8 @@ from llama_index.core.tools import QueryEngineTool, ToolMetadata
 from llama_index.core.query_engine import RouterQueryEngine
 from llama_index.core.selectors import LLMSingleSelector
 from llama_index.vector_stores.chroma import ChromaVectorStore
-from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.llms.openai import OpenAI
+from llama_index.embeddings.gemini import GeminiEmbedding
+from llama_index.llms.gemini import Gemini
 from dotenv import load_dotenv
 import logging
 
@@ -34,16 +33,14 @@ CHROMA_DB_PATH = os.environ.get("CHROMA_DB_PATH", "./chroma_db")
 # Validate critical environment variables at import time so the
 # app fails fast with a clear error rather than a cryptic one.
 # ---------------------------------------------------------------
-_openai_key = os.environ.get("OPENAI_API_KEY", "")
-if not _openai_key or _openai_key.startswith("sk-proj-your"):
+_gemini_key = os.environ.get("GEMINI_API_KEY", "")
+if not _gemini_key:
     logger.warning(
-        "OPENAI_API_KEY is not set or is still the placeholder value. "
+        "GEMINI_API_KEY is not set. "
         "The RAG system will not function. Set this in your host environment variables."
     )
 
-# Initialize LlamaIndex global settings
-Settings.llm = OpenAI(model="gpt-3.5-turbo")
-Settings.embed_model = OpenAIEmbedding()
+# LlamaIndex settings will be initialized dynamically inside RAGManager
 
 # --- System Prompt Definition ---
 SYSTEM_PROMPT = (
@@ -74,20 +71,46 @@ class RAGManager:
         self.vector_store = None
         self.storage_context = None
         self.vector_index = None
-        self.summary_index = None
         self.query_engine = None
         self._initialized = False
+        self.initialize_if_needed()
+
+    def initialize_if_needed(self) -> bool:
+        """Attempt to initialize the RAG system if it has not been initialized yet."""
+        if self._initialized and self.query_engine is not None:
+            return True
 
         try:
+            # Reload environment variables in case .env was updated after startup
+            from dotenv import load_dotenv
+            load_dotenv()
+            
+            gemini_key = os.environ.get("GEMINI_API_KEY", "")
+            if not gemini_key or "your_gemini_api_key_here" in gemini_key:
+                logger.warning(
+                    "RAG system initialization deferred: GEMINI_API_KEY is missing or contains the placeholder. "
+                    "Update your .env file with a valid key."
+                )
+                return False
+                
+            Settings.llm = Gemini(model="models/gemini-2.5-flash", api_key=gemini_key)
+            Settings.embed_model = GeminiEmbedding(model_name="models/gemini-embedding-001", api_key=gemini_key)
+            
             self._setup_chroma()
             self._initialize_index()
-            self._initialized = True
+            
+            if self.query_engine is not None:
+                self._initialized = True
+                logger.info("RAG index successfully initialized.")
+                return True
         except Exception as e:
             logger.error(
                 f"Failed to initialize RAG index: {str(e)}. "
                 "The system will start but queries will not work until this is resolved. "
-                "Ensure OPENAI_API_KEY is set and CHROMA_DB_PATH is writable."
+                "Ensure GEMINI_API_KEY is set and CHROMA_DB_PATH is writable."
             )
+            
+        return False
 
     def _setup_chroma(self):
         """Set up ChromaDB client and collection."""
@@ -100,6 +123,16 @@ class RAGManager:
     def _initialize_index(self):
         """Load documents and initialize Vector and Summary indices with a Router."""
         os.makedirs(DATA_DIR, exist_ok=True)
+
+        # If Chroma collection already has embeddings, load the index directly from the vector store
+        if self.chroma_collection and self.chroma_collection.count() > 0:
+            logger.info("Loading existing index from ChromaDB vector store...")
+            self.vector_index = VectorStoreIndex.from_vector_store(
+                self.vector_store,
+                storage_context=self.storage_context
+            )
+            self._setup_query_engine()
+            return
 
         # Check if directory has files before reading
         pdf_files = [f for f in os.listdir(DATA_DIR) if f.endswith(".pdf")]
@@ -119,49 +152,25 @@ class RAGManager:
             documents,
             storage_context=self.storage_context
         )
-        # Note: SummaryIndex doesn't support persistent vector stores in the same way,
-        # but we can rebuild it from the same documents.
-        self.summary_index = SummaryIndex.from_documents(documents)
 
         self._setup_query_engine()
 
     def _setup_query_engine(self):
-        """Configure the Router Query Engine with tools."""
-        if not self.vector_index or not self.summary_index:
+        """Configure the Query Engine."""
+        if not self.vector_index:
             return
 
         # Define Custom Prompt Templates
         qa_prompt = PromptTemplate(QA_PROMPT_TMPL)
 
-        # Define Tools for Router
-        vector_tool = QueryEngineTool(
-            query_engine=self.vector_index.as_query_engine(
-                text_qa_template=qa_prompt
-            ),
-            metadata=ToolMetadata(
-                name="vector_search",
-                description="Useful for retrieving specific facts or details from the policy documents."
-            )
-        )
-        summary_tool = QueryEngineTool(
-            query_engine=self.summary_index.as_query_engine(
-                response_mode="tree_summarize",
-                text_qa_template=qa_prompt
-            ),
-            metadata=ToolMetadata(
-                name="summary_search",
-                description="Useful for broad questions, overviews, or summaries of the policy documents."
-            )
-        )
-
-        # Initialize Router Query Engine
-        self.query_engine = RouterQueryEngine(
-            selector=LLMSingleSelector.from_defaults(),
-            query_engine_tools=[vector_tool, summary_tool],
+        # Initialize Query Engine
+        self.query_engine = self.vector_index.as_query_engine(
+            text_qa_template=qa_prompt
         )
 
     def refresh_index(self):
         """Incrementally refresh the index after new uploads or updates."""
+        self.initialize_if_needed()
         if not os.path.exists(DATA_DIR):
             return
 
@@ -176,8 +185,6 @@ class RAGManager:
         if self.vector_index:
             # refresh_ref_docs handles additions and updates based on doc_id (hash)
             self.vector_index.refresh_ref_docs(documents)
-            # Rebuild summary index as it's memory-based in this implementation
-            self.summary_index = SummaryIndex.from_documents(documents)
             self._setup_query_engine()
         else:
             self._initialize_index()
@@ -197,6 +204,7 @@ class RAGManager:
 
     def query(self, query_str: str) -> Dict[str, Any]:
         """Query the index and return response with enhanced citations."""
+        self.initialize_if_needed()
         if not self.query_engine:
             return {
                 "response": "No documents have been indexed yet. Please upload a policy PDF using the sidebar.",
@@ -208,7 +216,7 @@ class RAGManager:
         except Exception as e:
             logger.error(f"Query engine failure: {str(e)}")
             return {
-                "response": "The query system encountered an internal error. Please try again later.",
+                "response": f"The query system encountered an internal error: {str(e)}",
                 "sources": []
             }
 

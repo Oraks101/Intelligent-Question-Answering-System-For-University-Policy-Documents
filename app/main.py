@@ -2,13 +2,16 @@ import shutil
 import os
 import json
 import logging
+import threading
+import re
 from collections import deque
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Security
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Security, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.rag import rag_manager, DATA_DIR
+
 
 # Configure Logging
 logging.basicConfig(
@@ -21,7 +24,7 @@ logger = logging.getLogger("university-policy-backend")
 class Settings(BaseSettings):
     API_KEY: str = "default_key_change_me"
     CORS_ORIGINS: str = "*"  # Override in production: set to your Vercel frontend URL
-    OPENAI_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
 
     # Optional: set HISTORY_FILE to a path (e.g. /mnt/data/history.json) on hosts
     # with persistent storage. Leave unset to use in-memory history only.
@@ -39,9 +42,9 @@ if settings.API_KEY == "default_key_change_me":
         "Set a strong secret key via the API_KEY environment variable before going to production."
     )
 
-if not settings.OPENAI_API_KEY:
+if not settings.GEMINI_API_KEY:
     logger.warning(
-        "OPENAI_API_KEY is not configured. The RAG system will not function. "
+        "GEMINI_API_KEY is not configured. The RAG system will not function. "
         "Set it in your hosting platform's environment variables."
     )
 
@@ -72,6 +75,29 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
         logger.warning(f"Unauthorized access attempt with API key: {api_key!r}")
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return api_key
+
+
+# Student Authentication & Email Validation
+STUDENT_EMAIL_PATTERN = re.compile(r"^2\d{7}@nileuniver(sity|stiy)\.edu\.ng$", re.IGNORECASE)
+
+
+def validate_student_email(email: str) -> bool:
+    """Validate that the email has exactly 8 numbers, starts with 2, and ends with the Nile University domain."""
+    if not email:
+        return False
+    return bool(STUDENT_EMAIL_PATTERN.match(email.strip()))
+
+
+async def verify_student_email(x_student_email: str = Header(None)):
+    """Dependency to verify that the request is sent by a valid school student."""
+    if not x_student_email or not validate_student_email(x_student_email):
+        logger.warning(f"Unauthorized student access attempt: {x_student_email!r}")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing student authorization. Please log in with your student email."
+        )
+    return x_student_email
+
 
 
 # ---------------------------------------------------------------
@@ -132,9 +158,35 @@ class QueryResponse(BaseModel):
     sources: list
 
 
+class LoginRequest(BaseModel):
+    email: str
+
+
+@app.post("/login")
+async def login_student(request: LoginRequest):
+    """Validate a student email and return an access token session."""
+    email = request.email.strip()
+    if not validate_student_email(email):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid student email. Email must start with '2', contain exactly 8 digits before the '@', and end with '@nileuniverstiy.edu.ng' or '@nileuniversity.edu.ng'."
+        )
+    
+    # Generate a simple mock token based on the student's ID (the digits before '@')
+    student_id = email.split('@')[0]
+    token = f"student_session_{student_id}"
+    return {
+        "status": "success",
+        "email": email,
+        "token": token
+    }
+
+
+
 @app.get("/health")
 async def health_check():
     """Health probe endpoint — used by the frontend to detect backend availability."""
+    rag_manager.initialize_if_needed()
     rag_ready = rag_manager.query_engine is not None
     return {
         "status": "healthy",
@@ -157,18 +209,23 @@ async def upload_pdf(file: UploadFile = File(...)):
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Refresh the index after upload (handles incremental updates in rag.py)
-        rag_manager.refresh_index()
+        # Kick off indexing in a background thread so the response is instant.
+        # This prevents HTTP timeouts on large PDFs.
+        threading.Thread(target=rag_manager.refresh_index, daemon=True).start()
 
         status = "updated" if is_update else "uploaded"
-        return {"message": f"Successfully {status} {file.filename} and synchronized index."}
+        return {"message": f"Successfully {status} {file.filename}. Indexing in progress — it will be ready in a few seconds."}
     except Exception as e:
         logger.error(f"Upload failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query_index(request: QueryRequest, api_key: str = Depends(verify_api_key)):
+async def query_index(
+    request: QueryRequest,
+    api_key: str = Depends(verify_api_key),
+    student_email: str = Depends(verify_student_email)
+):
     """Query the RAG index and return a response with sources."""
     try:
         logger.info(f"Processing query: {request.query!r}")
@@ -192,7 +249,10 @@ async def delete_policy(filename: str, api_key: str = Depends(verify_api_key)):
 
 
 @app.get("/history")
-async def get_history(api_key: str = Depends(verify_api_key)):
+async def get_history(
+    api_key: str = Depends(verify_api_key),
+    student_email: str = Depends(verify_student_email)
+):
     """Retrieve query history (in-memory, resets on server restart unless HISTORY_FILE is set)."""
     return list(_history)
 

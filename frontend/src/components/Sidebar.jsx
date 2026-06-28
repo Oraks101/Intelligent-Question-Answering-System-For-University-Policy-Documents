@@ -1,8 +1,8 @@
 import React from 'react';
-import { Upload, FileText, Trash2 } from 'lucide-react';
+import { Upload, FileText, X, LogOut, User } from 'lucide-react';
 import heroImage from '../assets/Nile-University-hero.jpg';
 
-const Sidebar = ({ policies, onUpload, onDelete, isUploading }) => {
+const Sidebar = ({ policies, onUpload, onDelete, isUploading, isIndexing, studentEmail, onLogout }) => {
     return (
         <div className="w-64 bg-university-blue text-white h-full flex flex-col shadow-xl">
             <div className="p-6 border-b border-white/10 flex flex-col items-center gap-3">
@@ -14,7 +14,7 @@ const Sidebar = ({ policies, onUpload, onDelete, isUploading }) => {
             </div>
 
             <div className="p-4">
-                <label className="flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 transition-colors border border-white/20 rounded-lg p-3 cursor-pointer group">
+                <label className={`flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 transition-colors border border-white/20 rounded-lg p-3 cursor-pointer group ${(isUploading || isIndexing) ? 'opacity-60 cursor-not-allowed' : ''}`}>
                     <Upload className="w-5 h-5 group-hover:scale-110 transition-transform" />
                     <span className="font-medium text-sm">Upload Policy (PDF)</span>
                     <input
@@ -22,12 +22,18 @@ const Sidebar = ({ policies, onUpload, onDelete, isUploading }) => {
                         accept=".pdf"
                         className="hidden"
                         onChange={onUpload}
-                        disabled={isUploading}
+                        disabled={isUploading || isIndexing}
                     />
                 </label>
                 {isUploading && (
                     <div className="mt-2 text-center text-xs text-blue-200 animate-pulse">
-                        Uploading and indexing...
+                        Uploading...
+                    </div>
+                )}
+                {isIndexing && (
+                    <div className="mt-2 text-center text-xs text-yellow-200 animate-pulse flex items-center justify-center gap-1">
+                        <span className="inline-block w-2 h-2 bg-yellow-300 rounded-full animate-bounce"></span>
+                        Indexing document...
                     </div>
                 )}
             </div>
@@ -49,10 +55,10 @@ const Sidebar = ({ policies, onUpload, onDelete, isUploading }) => {
                                 </span>
                                 <button
                                     onClick={() => onDelete(policy)}
-                                    className="ml-auto opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-200 transition-all p-1 hover:bg-red-500/10 rounded"
+                                    className="ml-auto text-red-300 hover:text-red-100 bg-red-500/10 hover:bg-red-500/30 transition-all p-1.5 rounded-md flex items-center justify-center"
                                     title="Delete Policy"
                                 >
-                                    <Trash2 className="w-4 h-4" />
+                                    <X className="w-4 h-4" />
                                 </button>
                             </div>
                         ))
@@ -63,6 +69,32 @@ const Sidebar = ({ policies, onUpload, onDelete, isUploading }) => {
                     )}
                 </div>
             </div>
+
+            {/* Student Profile & Logout */}
+            {studentEmail && (
+                <div className="p-4 border-t border-white/10 bg-university-dark-blue/30">
+                    <div className="flex items-center gap-3 bg-white/5 p-3 rounded-xl border border-white/5 hover:border-white/10 transition-all">
+                        <div className="w-9 h-9 rounded-lg bg-blue-500/20 flex items-center justify-center text-blue-300">
+                            <User className="w-5 h-5" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <p className="text-xs font-semibold text-white truncate">
+                                {studentEmail.split('@')[0]}
+                            </p>
+                            <p className="text-[10px] text-blue-200/50 truncate">
+                                @{studentEmail.split('@')[1]}
+                            </p>
+                        </div>
+                        <button
+                            onClick={onLogout}
+                            className="p-2 text-blue-300 hover:text-red-200 hover:bg-red-500/10 rounded-lg transition-colors cursor-pointer"
+                            title="Log Out"
+                        >
+                            <LogOut className="w-4 h-4" />
+                        </button>
+                    </div>
+                </div>
+            )}
 
             <div className="p-4 border-t border-white/10 bg-university-dark-blue/50 text-xs text-blue-300/60 font-medium">
                 &copy; 2026 University RAG System

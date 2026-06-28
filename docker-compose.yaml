@@ -16,9 +16,8 @@ services:
     build:
       context: ./frontend
       args:
-        # In Docker Compose, the frontend reaches the backend via the service name.
-        # "backend" resolves to the backend container on the internal Docker network.
-        - VITE_API_BASE_URL=http://backend:8000
+        # The frontend runs in the client's browser, so it needs to access the backend via localhost (or the public domain), NOT the internal docker service name.
+        - VITE_API_BASE_URL=http://localhost:8000
         - VITE_API_KEY=${API_KEY}
     ports:
       - "5173:80"

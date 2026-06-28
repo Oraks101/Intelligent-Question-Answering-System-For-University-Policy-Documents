@@ -1,50 +1,82 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import Sidebar from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
+import Login from './components/Login';
 
 // ---------------------------------------------------------------------------
 // API Configuration
-//
-// VITE_API_BASE_URL must be set as an environment variable in your Vercel
-// project settings (Settings → Environment Variables) pointing to your
-// deployed FastAPI backend (e.g. https://your-backend.railway.app).
-//
-// VITE_API_KEY must match the API_KEY environment variable on the backend.
-//
-// DO NOT commit your .env file. Set these in the Vercel dashboard.
 // ---------------------------------------------------------------------------
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 const API_KEY = import.meta.env.VITE_API_KEY;
 
-const isMisconfigured = !API_BASE_URL || API_BASE_URL.includes('localhost');
+const isMisconfigured = !API_BASE_URL || (API_BASE_URL.includes('localhost') && import.meta.env.PROD);
 
 // Configure axios defaults
 if (API_KEY) {
   axios.defaults.headers.common['X-API-Key'] = API_KEY;
 }
 
+const savedStudentEmail = localStorage.getItem('studentEmail');
+if (savedStudentEmail) {
+  axios.defaults.headers.common['X-Student-Email'] = savedStudentEmail;
+}
+
 function App() {
+  const [studentEmail, setStudentEmail] = useState(localStorage.getItem('studentEmail') || '');
+  const [studentToken, setStudentToken] = useState(localStorage.getItem('studentToken') || '');
   const [policies, setPolicies] = useState([]);
   const [messages, setMessages] = useState([]);
   const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [backendHealthy, setBackendHealthy] = useState(null); // null = checking
+  const [isIndexing, setIsIndexing] = useState(false);
+  const [backendHealthy, setBackendHealthy] = useState(null);
+  const [toast, setToast] = useState(null); // { type: 'success' | 'error' | 'info', message: string }
 
-  // Fetch policies and history on mount
+  const showToast = useCallback((type, message, duration = 4000) => {
+    setToast({ type, message });
+    setTimeout(() => setToast(null), duration);
+  }, []);
+
+  const handleLoginSuccess = (email, token) => {
+    localStorage.setItem('studentEmail', email);
+    localStorage.setItem('studentToken', token);
+    setStudentEmail(email);
+    setStudentToken(token);
+    axios.defaults.headers.common['X-Student-Email'] = email;
+    showToast('success', 'Logged in successfully!');
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('studentEmail');
+    localStorage.removeItem('studentToken');
+    setStudentEmail('');
+    setStudentToken('');
+    delete axios.defaults.headers.common['X-Student-Email'];
+    setMessages([]);
+    showToast('info', 'Logged out successfully.');
+  };
+
+  // Fetch health check on mount
   useEffect(() => {
-    if (isMisconfigured) return; // Don't attempt API calls if URL is not set
+    if (isMisconfigured) return;
     checkHealth();
+  }, []);
+
+  // Fetch policies and history when logged in
+  useEffect(() => {
+    if (isMisconfigured || !studentEmail) return;
     fetchPolicies();
     fetchHistory();
-  }, []);
+  }, [studentEmail]);
 
   const checkHealth = async () => {
     try {
       await axios.get(`${API_BASE_URL}/health`);
       setBackendHealthy(true);
     } catch (error) {
+      console.error("Health check failed:", error);
       setBackendHealthy(false);
     }
   };
@@ -74,6 +106,8 @@ function App() {
   const handleUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    // Reset input so the same file can be re-uploaded if needed
+    e.target.value = '';
 
     const formData = new FormData();
     formData.append('file', file);
@@ -81,22 +115,46 @@ function App() {
     setIsUploading(true);
     try {
       await axios.post(`${API_BASE_URL}/upload`, formData);
+      // File saved — indexing now running in background on server
+      setIsUploading(false);
+      setIsIndexing(true);
+      showToast('info', `"${file.name}" uploaded! Indexing in background — will be ready in a few seconds.`, 6000);
       await fetchPolicies();
+
+      // Poll until the document appears fully indexed (health check returns rag_ready)
+      let attempts = 0;
+      const pollInterval = setInterval(async () => {
+        attempts++;
+        try {
+          const health = await axios.get(`${API_BASE_URL}/health`);
+          if (health.data.rag_ready || attempts >= 20) {
+            clearInterval(pollInterval);
+            setIsIndexing(false);
+            if (health.data.rag_ready) {
+              showToast('success', `"${file.name}" is now indexed and ready to query!`, 4000);
+            }
+          }
+        } catch {
+          clearInterval(pollInterval);
+          setIsIndexing(false);
+        }
+      }, 3000);
+
     } catch (error) {
       console.error("Upload failed:", error);
-      alert("Failed to upload policy. Check if the backend is running and reachable.");
-    } finally {
       setIsUploading(false);
+      showToast('error', 'Upload failed. Please check the backend is running and try again.');
     }
   };
 
   const handleDeletePolicy = async (filename) => {
-    if (!window.confirm(`Are you sure you want to delete ${filename}?`)) return;
     try {
       await axios.delete(`${API_BASE_URL}/policies/${filename}`);
       await fetchPolicies();
+      showToast('success', `"${filename}" has been removed.`);
     } catch (error) {
       console.error("Delete failed:", error);
+      showToast('error', `Failed to delete "${filename}". Please try again.`);
     }
   };
 
@@ -129,7 +187,6 @@ function App() {
   };
 
   // Show a clear error screen if the frontend is not properly configured.
-  // This prevents a confusing blank screen or silent localhost failures on Vercel.
   if (isMisconfigured) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-slate-50 font-sans">
@@ -157,13 +214,32 @@ function App() {
     );
   }
 
+  // Show login screen if student is not authenticated
+  if (!studentEmail) {
+    return <Login onLoginSuccess={handleLoginSuccess} apiBaseUrl={API_BASE_URL} />;
+  }
+
   return (
     <div className="flex h-screen w-full bg-slate-50 overflow-hidden font-sans antialiased text-slate-900">
+      {/* Toast notification */}
+      {toast && (
+        <div className={`fixed top-5 right-5 z-[100] max-w-sm px-5 py-3 rounded-xl shadow-2xl text-white text-sm font-medium flex items-start gap-3 transition-all duration-300 animate-fade-in-down
+          ${toast.type === 'success' ? 'bg-emerald-600' : toast.type === 'error' ? 'bg-red-600' : 'bg-blue-600'}`}>
+          <span className="text-lg leading-none mt-0.5">
+            {toast.type === 'success' ? '✅' : toast.type === 'error' ? '❌' : '⏳'}
+          </span>
+          <span>{toast.message}</span>
+        </div>
+      )}
+
       <Sidebar
         policies={policies}
         onUpload={handleUpload}
         onDelete={handleDeletePolicy}
         isUploading={isUploading}
+        isIndexing={isIndexing}
+        studentEmail={studentEmail}
+        onLogout={handleLogout}
       />
       <main className="flex-1 flex flex-col h-full bg-white relative">
         {/* Backend offline banner */}
