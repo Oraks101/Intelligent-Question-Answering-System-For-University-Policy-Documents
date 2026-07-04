@@ -78,23 +78,24 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
 
 
 # Student Authentication & Email Validation
-STUDENT_EMAIL_PATTERN = re.compile(r"^2\d{7}@nileuniver(sity|stiy)\.edu\.ng$", re.IGNORECASE)
+# Relaxed to allow any valid email format
+STUDENT_EMAIL_PATTERN = re.compile(r"^[\w\.-]+@[\w\.-]+\.\w+$", re.IGNORECASE)
 
 
 def validate_student_email(email: str) -> bool:
-    """Validate that the email has exactly 8 numbers, starts with 2, and ends with the Nile University domain."""
+    """Validate that the email is a valid email format."""
     if not email:
         return False
     return bool(STUDENT_EMAIL_PATTERN.match(email.strip()))
 
 
 async def verify_student_email(x_student_email: str = Header(None)):
-    """Dependency to verify that the request is sent by a valid school student."""
+    """Dependency to verify that the request contains a valid email."""
     if not x_student_email or not validate_student_email(x_student_email):
-        logger.warning(f"Unauthorized student access attempt: {x_student_email!r}")
+        logger.warning(f"Unauthorized access attempt: {x_student_email!r}")
         raise HTTPException(
             status_code=401,
-            detail="Invalid or missing student authorization. Please log in with your student email."
+            detail="Invalid or missing authorization. Please log in with a valid email."
         )
     return x_student_email
 
@@ -169,7 +170,7 @@ async def login_student(request: LoginRequest):
     if not validate_student_email(email):
         raise HTTPException(
             status_code=400,
-            detail="Invalid student email. Email must start with '2', contain exactly 8 digits before the '@', and end with '@nileuniverstiy.edu.ng' or '@nileuniversity.edu.ng'."
+            detail="Invalid email format. Please enter a valid email address."
         )
     
     # Generate a simple mock token based on the student's ID (the digits before '@')
